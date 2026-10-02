@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       ssh_pubkey:
-        description: '注入镜像的 SSH 公钥（root 与 alpine 用户都会写入）'
+        description: '注入镜像的 SSH 公钥（root 与 alpine 用户都会写入）。填 none 则本次构建不注入任何公钥。'
         required: false
         default: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine'
       release_tag:
@@ -39,6 +39,11 @@ jobs:
       - name: Validate SSH public key
         run: |
           set -euxo pipefail
+
+          if [ "$(printf '%s' "${SSH_PUBKEY}" | tr '[:upper:]' '[:lower:]')" = "none" ]; then
+            echo "ssh_pubkey=none：本次构建不注入任何公钥"
+            exit 0
+          fi
 
           if [ "$(printf '%s' "${SSH_PUBKEY}" | wc -l)" -ne 0 ]; then
             echo "错误：SSH 公钥不能包含换行符"
@@ -114,6 +119,13 @@ jobs:
           export LIBGUESTFS_DEBUG=1
           export LIBGUESTFS_TRACE=1
 
+          SSH_INJECT_ARGS=()
+          if [ "$(printf '%s' "${SSH_PUBKEY}" | tr '[:upper:]' '[:lower:]')" = "none" ]; then
+            echo "ssh_pubkey=none：跳过 SSH 公钥注入"
+          else
+            SSH_INJECT_ARGS=(--ssh-inject "alpine:string:${SSH_PUBKEY}" --ssh-inject "root:string:${SSH_PUBKEY}")
+          fi
+
           sudo virt-customize -a alpine-base.qcow2 \
             --smp 2 \
             --timezone Asia/Hong_Kong \
@@ -136,8 +148,7 @@ jobs:
             --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config" \
             --run-command "sed -i 's/#*PermitEmptyPasswords.*/PermitEmptyPasswords no/g' /etc/ssh/sshd_config" \
             --append-line '/etc/ssh/sshd_config:UseDNS no' \
-            --ssh-inject "alpine:string:${SSH_PUBKEY}" \
-            --ssh-inject "root:string:${SSH_PUBKEY}" \
+            "${SSH_INJECT_ARGS[@]}" \
             --run-command "mkdir -p /etc/cloud/cloud.cfg.d && printf '%s\n' 'disable_root: false' 'ssh_pwauth: true' > /etc/cloud/cloud.cfg.d/99-root-ssh.cfg" \
             --run-command "if [ -f /boot/extlinux.conf ]; then sed -i 's/\(APPEND .*\)/\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf; else echo 'skip: /boot/extlinux.conf not found'; fi" \
             --run-command 'rc-update add chronyd default || true' \
