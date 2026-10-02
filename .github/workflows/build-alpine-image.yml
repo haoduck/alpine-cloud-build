@@ -51,7 +51,8 @@ jobs:
       BOOT_MODE: ${{ inputs.boot_mode || 'both' }}
     outputs:
       image_version: ${{ steps.download.outputs.image_version }}
-      boot_mode: ${{ steps.download.outputs.boot_mode }}
+      boot_label: ${{ steps.download.outputs.boot_label }}
+      image_name: ${{ steps.rename.outputs.image_name }}
     steps:
       - name: Validate inputs
         run: |
@@ -127,8 +128,12 @@ jobs:
           axel -n 8 -o alpine-base.qcow2 "${DOWNLOAD_URL}"
 
           IMAGE_VERSION="$(printf '%s' "${FILE_NAME}" | sed -E 's/^generic_alpine-([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+          case "${BOOT_MODE}" in
+            both) BOOT_LABEL=bios-uefi ;;
+            *)    BOOT_LABEL="${BOOT_MODE}" ;;
+          esac
           echo "image_version=${IMAGE_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "boot_mode=${BOOT_MODE}" >> "${GITHUB_OUTPUT}"
+          echo "boot_label=${BOOT_LABEL}" >> "${GITHUB_OUTPUT}"
 
       - name: Verify downloaded image
         run: |
@@ -251,11 +256,23 @@ jobs:
           qemu-img info alpine-custom.qcow2
           ls -lh alpine-custom.qcow2
 
+      - name: Rename image with version and boot label
+        id: rename
+        env:
+          IMAGE_VERSION: ${{ steps.download.outputs.image_version }}
+          BOOT_LABEL: ${{ steps.download.outputs.boot_label }}
+        run: |
+          set -euxo pipefail
+          IMAGE_NAME="alpine-custom-${IMAGE_VERSION}-${BOOT_LABEL}.qcow2"
+          mv -f alpine-custom.qcow2 "${IMAGE_NAME}"
+          ls -lh "${IMAGE_NAME}"
+          echo "image_name=${IMAGE_NAME}" >> "${GITHUB_OUTPUT}"
+
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
           name: alpine-custom-qcow2
-          path: alpine-custom.qcow2
+          path: alpine-custom-*.qcow2
           retention-days: 14
 
   release:
@@ -276,16 +293,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           IMAGE_VERSION: ${{ needs.build.outputs.image_version }}
-          BOOT_MODE: ${{ needs.build.outputs.boot_mode }}
+          BOOT_LABEL: ${{ needs.build.outputs.boot_label }}
+          IMAGE_NAME: ${{ needs.build.outputs.image_name }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euxo pipefail
-          ls -lh dist/alpine-custom.qcow2
-
-          case "${BOOT_MODE}" in
-            both) BOOT_LABEL=bios-uefi ;;
-            *)    BOOT_LABEL="${BOOT_MODE}" ;;
-          esac
+          ls -lh "dist/${IMAGE_NAME}"
 
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             BASE_TAG="${GITHUB_REF_NAME}"
@@ -294,14 +307,14 @@ jobs:
             [ -n "${BASE_TAG}" ] || BASE_TAG="manual-${GITHUB_RUN_NUMBER}"
           fi
           TAG_NAME="${BASE_TAG}-${BOOT_LABEL}"
-          echo "准备发布 Tag: ${TAG_NAME}（引导方式 ${BOOT_MODE}）"
+          echo "准备发布 Tag: ${TAG_NAME}（镜像文件 ${IMAGE_NAME}）"
 
           if ! gh release view "${TAG_NAME}" >/dev/null 2>&1; then
             gh release create "${TAG_NAME}" \
               --title "Custom Alpine Linux Cloud Image ${TAG_NAME}" \
-              --notes "自动发布的 Alpine Linux 阿里云优化镜像，基于 Alpine ${IMAGE_VERSION}（${BOOT_MODE} 引导）"
+              --notes "自动发布的 Alpine Linux 阿里云优化镜像，基于 Alpine ${IMAGE_VERSION}（${BOOT_LABEL} 引导），镜像文件 ${IMAGE_NAME}"
           fi
 
-          gh release upload "${TAG_NAME}" dist/alpine-custom.qcow2 --clobber
+          gh release upload "${TAG_NAME}" "dist/${IMAGE_NAME}" --clobber
 
           gh release edit "${TAG_NAME}" --latest

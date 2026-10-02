@@ -13,7 +13,7 @@
 
 ## 使用说明（阿里云）
 
-1. 从 Releases 下载 `alpine-custom.qcow2`
+1. 从 Releases 下载镜像，文件名是 `alpine-custom-<Alpine版本>-<引导标签>.qcow2`，例如 `alpine-custom-3.24.1-bios-uefi.qcow2`
 2. 在阿里云导入自定义镜像。默认产出的镜像 **BIOS 和 UEFI 都能启动**，「启动模式」选哪个都行；如果构建时选了单一模式（`boot_mode=bios` 或 `uefi`），导入时「启动模式」必须与之一致
 3. 创建 ECS 时可绑定 SSH 密钥对（镜像内已内置公钥，非必需）
 4. 系统盘最小选择 **1G 即可**
@@ -37,7 +37,7 @@
 构建完成后：
 
 - Release tag 会带上引导方式后缀便于区分：`<tag>-bios-uefi`（both）、`<tag>-bios`、`<tag>-uefi`。例如推 `v2.0.2` 且 `boot_mode=both`，发布出来的就是 `v2.0.2-bios-uefi`
-- 镜像以 `alpine-custom.qcow2` 发布到该 Release
+- 镜像文件名带版本号和引导标签：`alpine-custom-<Alpine版本>-<引导标签>.qcow2`，例如 `alpine-custom-3.24.1-bios-uefi.qcow2`
 - 同时作为 workflow artifact 保留 14 天，可在对应 run 页面直接下载
 
 发布 Release 使用 GitHub 内置的 `GITHUB_TOKEN`，不需要额外配置 secret。
