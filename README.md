@@ -54,6 +54,42 @@
 
 ---
 
+## 生成 SSH 密钥对
+
+构建时可以把一把公钥烤进镜像（见构建里的 `ssh_pubkey` 输入），需要的话用下面的命令生成密钥对。没有特殊需求用 `ed25519` 即可，比 RSA 更短也更安全。
+
+**Linux / macOS**
+
+```bash
+ssh-keygen -t ed25519 -C "alpine-image" -f ~/.ssh/id_ed25519
+chmod 600 ~/.ssh/id_ed25519
+chmod 644 ~/.ssh/id_ed25519.pub
+cat ~/.ssh/id_ed25519.pub
+```
+
+**Windows（PowerShell，Win10 1809+ 自带 OpenSSH）**
+
+```powershell
+ssh-keygen -t ed25519 -C "alpine-image" -f $env:USERPROFILE\.ssh\id_ed25519
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub
+```
+
+**Windows（Git Bash / WSL）**
+
+```bash
+ssh-keygen -t ed25519 -C "alpine-image" -f ~/.ssh/id_ed25519
+chmod 600 ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
+```
+
+生成后得到两个文件：`id_ed25519` 是**私钥**，留在本地不要外传；`id_ed25519.pub` 是**公钥**，把它整行内容填进构建时的 `ssh_pubkey` 输入，或者交给阿里云做密钥对。
+
+> 已经有密钥就不要重复生成，直接 `cat ~/.ssh/id_ed25519.pub` 取公钥即可。老系统若不支持 ed25519，可以换成 `ssh-keygen -t rsa -b 4096`。
+>
+> 如果这把密钥还要用来向 GitHub 推送代码，把公钥内容加到 GitHub 的 Settings → SSH and GPG keys 即可，生成命令是一样的。
+
+---
+
 ## 登录与权限（重要）
 
 - 镜像内已预置 SSH 公钥，`root` 与 `alpine` 两个用户均可直接用对应私钥登录
