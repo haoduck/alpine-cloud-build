@@ -1,0 +1,195 @@
+name: Build Alpine Cloud Image
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to create or update. Leave empty to use manual-<run number>.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  LIBGUESTFS_BACKEND: direct
+
+concurrency:
+  group: build-alpine-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    outputs:
+      image_version: ${{ steps.download.outputs.image_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libguestfs-tools axel qemu-utils
+
+      - name: Download latest Alpine cloud image
+        id: download
+        run: |
+          set -euxo pipefail
+          BASE_URL="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud"
+
+          FILE_NAME="$(curl -fsSL "${BASE_URL}/" \
+            | grep -Eo 'generic_alpine-[0-9]+\.[0-9]+\.[0-9]+-x86_64-uefi-cloudinit-r[0-9]+\.qcow2' \
+            | sort -Vu \
+            | tail -n1)"
+
+          test -n "${FILE_NAME}" || (echo "未找到可用 qcow2 文件" && exit 1)
+
+          DOWNLOAD_URL="${BASE_URL}/${FILE_NAME}"
+          echo "最新镜像: ${FILE_NAME}"
+          echo "下载地址: ${DOWNLOAD_URL}"
+
+          axel -n 8 -o alpine-base.qcow2 "${DOWNLOAD_URL}"
+
+          IMAGE_VERSION="$(printf '%s' "${FILE_NAME}" | sed -E 's/^generic_alpine-([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+          echo "image_version=${IMAGE_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify downloaded image
+        run: |
+          set -euxo pipefail
+          echo "--- file 输出 ---"
+          file alpine-base.qcow2
+
+          test -f alpine-base.qcow2 || (echo "错误：alpine-base.qcow2 不存在"; exit 1)
+          test -s alpine-base.qcow2 || (echo "错误：alpine-base.qcow2 为空"; exit 1)
+
+          qemu-img info alpine-base.qcow2 > qemu-img-info.txt 2>&1
+          if grep -q "file format: qcow2" qemu-img-info.txt && grep -q "virtual size" qemu-img-info.txt; then
+            echo "文件类型验证通过：有效 QCOW2 镜像"
+            cat qemu-img-info.txt
+          else
+            echo "错误：qemu-img 无法识别为有效 qcow2"
+            cat qemu-img-info.txt
+            exit 1
+          fi
+
+      - name: Expand qcow2 container
+        run: |
+          set -euxo pipefail
+          sudo qemu-img resize alpine-base.qcow2 1G
+          qemu-img info alpine-base.qcow2
+
+      - name: Customize Alpine image for Alibaba Cloud
+        run: |
+          set -euxo pipefail
+          export LIBGUESTFS_DEBUG=1
+          export LIBGUESTFS_TRACE=1
+
+          sudo virt-customize -a alpine-base.qcow2 \
+            --smp 2 \
+            --timezone Asia/Hong_Kong \
+            --install sudo,chrony,cloud-init,cloud-utils-growpart \
+            --run-command "mkdir -p /etc/cloud/cloud.cfg.d && printf '%s\n' \
+              'growpart:' \
+              '  mode: auto' \
+              '  devices: [\"/\"]' \
+              '  ignore_growroot_disabled: false' \
+              'resize_rootfs: true' \
+              > /etc/cloud/cloud.cfg.d/99-growpart.cfg" \
+            --run-command "printf '%s\n' \
+              'pool ntp.aliyun.com iburst' \
+              'driftfile /var/lib/chrony/drift' \
+              'rtcsync' \
+              'makestep 1.0 3' \
+              'logdir /var/log/chrony' \
+              > /etc/chrony/chrony.conf" \
+            --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config" \
+            --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config" \
+            --run-command "sed -i 's/#*PermitEmptyPasswords.*/PermitEmptyPasswords no/g' /etc/ssh/sshd_config" \
+            --append-line '/etc/ssh/sshd_config:UseDNS no' \
+            --ssh-inject 'alpine:string:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine' \
+            --ssh-inject 'root:string:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine' \
+            --run-command "mkdir -p /etc/cloud/cloud.cfg.d && printf '%s\n' 'disable_root: false' 'ssh_pwauth: true' > /etc/cloud/cloud.cfg.d/99-root-ssh.cfg" \
+            --run-command "if [ -f /boot/extlinux.conf ]; then sed -i 's/\(APPEND .*\)/\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf; else echo 'skip: /boot/extlinux.conf not found'; fi" \
+            --run-command 'rc-update add chronyd default || true' \
+            --run-command 'rc-update add cloud-init default || true' \
+            --run-command 'rc-update add cloud-config default || true' \
+            --run-command 'rc-update add cloud-final default || true' \
+            --run-command 'rc-update add cloud-init-local default || true' \
+            --run-command 'apk cache clean' \
+            --run-command "cp -f /etc/apk/repositories /etc/apk/repositories.bak" \
+            --run-command "sed -Ei 's#https?://dl-cdn\.alpinelinux\.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories && echo '--- /etc/apk/repositories ---' && cat /etc/apk/repositories" \
+            --delete '/var/log/*.log' \
+            --delete '/var/cache/apk/*' \
+            --run-command 'mkdir -p /etc && : > /etc/machine-id'
+
+      - name: Compress image
+        run: |
+          set -euxo pipefail
+          export LIBGUESTFS_BACKEND=direct
+          export LIBGUESTFS_DEBUG=1
+          export LIBGUESTFS_TRACE=1
+
+          if sudo virt-sparsify --compress alpine-base.qcow2 alpine-custom.qcow2; then
+            echo "virt-sparsify 成功"
+          else
+            echo "virt-sparsify 失败，使用 qemu-img convert 兜底"
+            rm -f alpine-custom.qcow2
+            qemu-img convert -O qcow2 -c alpine-base.qcow2 alpine-custom.qcow2
+          fi
+
+          qemu-img info alpine-custom.qcow2
+          ls -lh alpine-custom.qcow2
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpine-custom-qcow2
+          path: alpine-custom.qcow2
+          retention-days: 14
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: alpine-custom-qcow2
+          path: dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          IMAGE_VERSION: ${{ needs.build.outputs.image_version }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euxo pipefail
+          ls -lh dist/alpine-custom.qcow2
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG_NAME="${GITHUB_REF_NAME}"
+          else
+            TAG_NAME="${INPUT_RELEASE_TAG}"
+            [ -n "${TAG_NAME}" ] || TAG_NAME="manual-${GITHUB_RUN_NUMBER}"
+          fi
+          echo "准备发布 Tag: ${TAG_NAME}"
+
+          if ! gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            gh release create "${TAG_NAME}" \
+              --title "Custom Alpine Linux Cloud Image ${TAG_NAME}" \
+              --notes "自动发布的 Alpine Linux 阿里云优化镜像，基于 Alpine ${IMAGE_VERSION}"
+          fi
+
+          gh release upload "${TAG_NAME}" dist/alpine-custom.qcow2 --clobber
+
+          gh release edit "${TAG_NAME}" --latest

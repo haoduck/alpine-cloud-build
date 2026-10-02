@@ -15,8 +15,29 @@
 
 1. 从 Releases 下载 `alpine-custom.qcow2`
 2. 在阿里云导入自定义镜像
-3. 创建 ECS 时**绑定 SSH 密钥对**
+3. 创建 ECS 时可绑定 SSH 密钥对（镜像内已内置公钥，非必需）
 4. 系统盘最小选择 **1G 即可**
+
+---
+
+## 构建镜像（GitHub Actions）
+
+镜像由 `.github/workflows/build-alpine-image.yml` 构建，触发方式二选一：
+
+- 推送 `v*` 形式的 tag：
+  ```bash
+  git tag v2.0.2 && git push origin v2.0.2
+  ```
+- 在仓库 Actions 页面选择 `Build Alpine Cloud Image` → **Run workflow** 手动触发，可填写要发布的 release tag，留空则用 `manual-<run number>`
+
+构建完成后：
+
+- 镜像以 `alpine-custom.qcow2` 发布到 GitHub Release（tag 触发用该 tag，手动触发用指定 tag 或 `manual-<run number>`）
+- 同时作为 workflow artifact 保留 14 天，可在对应 run 页面直接下载
+
+发布 Release 使用 GitHub 内置的 `GITHUB_TOKEN`，不需要额外配置 secret。
+
+> 仓库内仍保留 `.circleci/config.yml`。那套流水线是 CircleCI 专用的，需要在 circleci.com 单独接入本仓库后才会运行；未接入则不会触发。
 
 ---
 
