@@ -6,8 +6,12 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      ssh_pubkey:
+        description: '注入镜像的 SSH 公钥（root 与 alpine 用户都会写入）'
+        required: false
+        default: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine'
       release_tag:
-        description: 'Release tag to create or update. Leave empty to use manual-<run number>.'
+        description: '要创建或更新的 Release tag，留空则使用 manual-<run number>'
         required: false
         default: ''
 
@@ -25,9 +29,29 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    env:
+      # 这个兜底值必须与 workflow_dispatch 里 ssh_pubkey 的 default 保持一致：
+      # 手动触发时走输入值，tag 触发时没有输入值，走这里。
+      SSH_PUBKEY: ${{ inputs.ssh_pubkey || 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine' }}
     outputs:
       image_version: ${{ steps.download.outputs.image_version }}
     steps:
+      - name: Validate SSH public key
+        run: |
+          set -euxo pipefail
+
+          if [ "$(printf '%s' "${SSH_PUBKEY}" | wc -l)" -ne 0 ]; then
+            echo "错误：SSH 公钥不能包含换行符"
+            exit 1
+          fi
+
+          if ! printf '%s' "${SSH_PUBKEY}" | grep -qE '^(ssh-rsa|ssh-dss|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [^[:space:]]+)?$'; then
+            echo "错误：SSH_PUBKEY 不是有效的 OpenSSH 公钥：${SSH_PUBKEY}"
+            exit 1
+          fi
+
+          echo "将注入的公钥：${SSH_PUBKEY}"
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -112,8 +136,8 @@ jobs:
             --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config" \
             --run-command "sed -i 's/#*PermitEmptyPasswords.*/PermitEmptyPasswords no/g' /etc/ssh/sshd_config" \
             --append-line '/etc/ssh/sshd_config:UseDNS no' \
-            --ssh-inject 'alpine:string:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine' \
-            --ssh-inject 'root:string:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine' \
+            --ssh-inject "alpine:string:${SSH_PUBKEY}" \
+            --ssh-inject "root:string:${SSH_PUBKEY}" \
             --run-command "mkdir -p /etc/cloud/cloud.cfg.d && printf '%s\n' 'disable_root: false' 'ssh_pwauth: true' > /etc/cloud/cloud.cfg.d/99-root-ssh.cfg" \
             --run-command "if [ -f /boot/extlinux.conf ]; then sed -i 's/\(APPEND .*\)/\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf; else echo 'skip: /boot/extlinux.conf not found'; fi" \
             --run-command 'rc-update add chronyd default || true' \

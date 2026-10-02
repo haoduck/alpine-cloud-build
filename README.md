@@ -28,7 +28,9 @@
   ```bash
   git tag v2.0.2 && git push origin v2.0.2
   ```
-- 在仓库 Actions 页面选择 `Build Alpine Cloud Image` → **Run workflow** 手动触发，可填写要发布的 release tag，留空则用 `manual-<run number>`
+- 在仓库 Actions 页面选择 `Build Alpine Cloud Image` → **Run workflow** 手动触发，可以设置：
+  - `ssh_pubkey`：注入镜像的 SSH 公钥（`root` 与 `alpine` 用户都会写入），默认已填好仓库内置的那把，改成你自己的即可
+  - `release_tag`：要发布的 release tag，留空则用 `manual-<run number>`
 
 构建完成后：
 
@@ -36,6 +38,8 @@
 - 同时作为 workflow artifact 保留 14 天，可在对应 run 页面直接下载
 
 发布 Release 使用 GitHub 内置的 `GITHUB_TOKEN`，不需要额外配置 secret。
+
+> `ssh_pubkey` 是手动触发的输入项，只在那一次运行生效。推 tag 触发时没有输入值，会使用 workflow 里写死的默认公钥；想永久更换默认公钥，需要改 `.github/workflows/build-alpine-image.yml` 里的两处默认值（`workflow_dispatch` 输入的 `default`，以及 `build` job 的 `env.SSH_PUBKEY` 兜底值）。
 
 > 仓库内仍保留 `.circleci/config.yml`。那套流水线是 CircleCI 专用的，需要在 circleci.com 单独接入本仓库后才会运行；未接入则不会触发。
 
