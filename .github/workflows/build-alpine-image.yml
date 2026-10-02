@@ -6,6 +6,13 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      boot_mode:
+        description: '基础镜像的引导方式。阿里云导入自定义镜像时"启动模式"必须与此一致，默认 BIOS。'
+        type: choice
+        options:
+          - bios
+          - uefi
+        default: bios
       ssh_pubkey:
         description: '注入镜像的 SSH 公钥（root 与 alpine 用户都会写入）。填 none 则本次构建不注入任何公钥。'
         required: false
@@ -39,12 +46,21 @@ jobs:
       SSH_PUBKEY: ${{ inputs.ssh_pubkey || 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine' }}
       # 留空表示不设置密码；tag 触发时没有输入值，同样不设置密码。
       SSH_PASSWORD: ${{ inputs.password }}
+      # 阿里云 ImportImage 的 BootMode 默认是 BIOS，所以这里也默认 bios。
+      BOOT_MODE: ${{ inputs.boot_mode || 'bios' }}
     outputs:
       image_version: ${{ steps.download.outputs.image_version }}
+      boot_mode: ${{ steps.download.outputs.boot_mode }}
     steps:
       - name: Validate inputs
         run: |
           set -euxo pipefail
+
+          case "${BOOT_MODE}" in
+            bios|uefi) ;;
+            *) echo "错误：boot_mode 只能是 bios 或 uefi，当前为 ${BOOT_MODE}"; exit 1 ;;
+          esac
+          echo "基础镜像引导方式：${BOOT_MODE}（阿里云导入时「启动模式」需与之一致）"
 
           if [ "$(printf '%s' "${SSH_PUBKEY}" | tr '[:upper:]' '[:lower:]')" = "none" ]; then
             echo "ssh_pubkey=none：本次构建不注入任何公钥"
@@ -90,11 +106,11 @@ jobs:
           BASE_URL="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud"
 
           FILE_NAME="$(curl -fsSL "${BASE_URL}/" \
-            | grep -Eo 'generic_alpine-[0-9]+\.[0-9]+\.[0-9]+-x86_64-uefi-cloudinit-r[0-9]+\.qcow2' \
+            | grep -Eo "generic_alpine-[0-9]+\.[0-9]+\.[0-9]+-x86_64-${BOOT_MODE}-cloudinit-r[0-9]+\.qcow2" \
             | sort -Vu \
             | tail -n1)"
 
-          test -n "${FILE_NAME}" || (echo "未找到可用 qcow2 文件" && exit 1)
+          test -n "${FILE_NAME}" || (echo "未找到可用 qcow2 文件（boot_mode=${BOOT_MODE}）" && exit 1)
 
           DOWNLOAD_URL="${BASE_URL}/${FILE_NAME}"
           echo "最新镜像: ${FILE_NAME}"
@@ -104,6 +120,7 @@ jobs:
 
           IMAGE_VERSION="$(printf '%s' "${FILE_NAME}" | sed -E 's/^generic_alpine-([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
           echo "image_version=${IMAGE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "boot_mode=${BOOT_MODE}" >> "${GITHUB_OUTPUT}"
 
       - name: Verify downloaded image
         run: |
@@ -235,6 +252,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           IMAGE_VERSION: ${{ needs.build.outputs.image_version }}
+          BOOT_MODE: ${{ needs.build.outputs.boot_mode }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euxo pipefail
@@ -251,7 +269,7 @@ jobs:
           if ! gh release view "${TAG_NAME}" >/dev/null 2>&1; then
             gh release create "${TAG_NAME}" \
               --title "Custom Alpine Linux Cloud Image ${TAG_NAME}" \
-              --notes "自动发布的 Alpine Linux 阿里云优化镜像，基于 Alpine ${IMAGE_VERSION}"
+              --notes "自动发布的 Alpine Linux 阿里云优化镜像，基于 Alpine ${IMAGE_VERSION}（${BOOT_MODE} 引导）"
           fi
 
           gh release upload "${TAG_NAME}" dist/alpine-custom.qcow2 --clobber

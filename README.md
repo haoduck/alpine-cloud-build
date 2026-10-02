@@ -14,7 +14,7 @@
 ## 使用说明（阿里云）
 
 1. 从 Releases 下载 `alpine-custom.qcow2`
-2. 在阿里云导入自定义镜像
+2. 在阿里云导入自定义镜像，**「启动模式」必须与构建时选的 `boot_mode` 一致**（默认 `bios`）
 3. 创建 ECS 时可绑定 SSH 密钥对（镜像内已内置公钥，非必需）
 4. 系统盘最小选择 **1G 即可**
 
@@ -29,6 +29,7 @@
   git tag v2.0.2 && git push origin v2.0.2
   ```
 - 在仓库 Actions 页面选择 `Build Alpine Cloud Image` → **Run workflow** 手动触发，可以设置：
+  - `boot_mode`：基础镜像的引导方式，`bios`（默认）或 `uefi`。阿里云导入镜像时的「启动模式」必须与之一致，否则实例会卡在 `Booting from Hard Disk...`
   - `ssh_pubkey`：注入镜像的 SSH 公钥（`root` 与 `alpine` 用户都会写入），默认已填好仓库内置的那把，改成你自己的即可；填 `none` 则本次构建不注入任何公钥
   - `password`：同时为 `root` 与 `alpine` 设置的登录密码，留空则不设置任何密码
   - `release_tag`：要发布的 release tag，留空则用 `manual-<run number>`
@@ -89,6 +90,21 @@
 - 不包含额外业务软件栈（Docker/K8s/监控等）
 
 如有需要，请在实例初始化后自行安装。
+
+---
+
+## 常见问题
+
+### 实例启动卡在 `Booting from Hard Disk...`
+
+引导方式不匹配。这句提示是传统 BIOS（SeaBIOS）输出的，说明实例按 Legacy BIOS 启动，但磁盘上没有 BIOS 引导程序——镜像构建时用的是 UEFI 变体的基础镜像，而阿里云 `ImportImage` 的 `BootMode` 参数**默认是 `BIOS`**。
+
+两种解决办法：
+
+- 导入镜像时把「启动模式」改成 UEFI，并确认实例规格族支持 UEFI 启动
+- 或者用 `boot_mode=bios` 重新构建一个 BIOS 引导的镜像，按默认的 BIOS 模式导入
+
+对阿里云来说 BIOS 兼容性更好，所以构建默认就是 `bios`。
 
 ---
 
