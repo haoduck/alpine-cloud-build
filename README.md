@@ -30,6 +30,7 @@
   ```
 - 在仓库 Actions 页面选择 `Build Alpine Cloud Image` → **Run workflow** 手动触发，可以设置：
   - `ssh_pubkey`：注入镜像的 SSH 公钥（`root` 与 `alpine` 用户都会写入），默认已填好仓库内置的那把，改成你自己的即可；填 `none` 则本次构建不注入任何公钥
+  - `password`：同时为 `root` 与 `alpine` 设置的登录密码，留空则不设置任何密码
   - `release_tag`：要发布的 release tag，留空则用 `manual-<run number>`
 
 构建完成后：
@@ -41,7 +42,11 @@
 
 > `ssh_pubkey` 是手动触发的输入项，只在那一次运行生效。推 tag 触发时没有输入值，会使用 workflow 里写死的默认公钥；想永久更换默认公钥，需要改 `.github/workflows/build-alpine-image.yml` 里的两处默认值（`workflow_dispatch` 输入的 `default`，以及 `build` job 的 `env.SSH_PUBKEY` 兜底值）。
 >
-> 填 `none` 时镜像内不含任何公钥，此时只能靠创建 ECS 时绑定密钥对（cloud-init 注入）或控制台登录。镜像本身的密码登录策略不受影响（允许密码登录、但不预设任何密码、禁止空密码）。
+> 填 `none` 时镜像内不含任何公钥，此时只能靠创建 ECS 时绑定密钥对（cloud-init 注入）或控制台登录。镜像本身的密码登录策略不受影响（允许密码登录、禁止空密码）。
+
+> `password` 留空时镜像内不预设任何密码；填了则两个账号用同一个密码登录。密码在构建日志里会用 `::add-mask::` 隐藏为 `***`。但要注意 `workflow_dispatch` 的输入值不属于 GitHub 的 secret 机制，运行记录中可能可见，不要用它传长期使用的敏感密码。
+>
+> 另外，Alpine 的默认用户 `alpine` 在 cloud.cfg 里默认带 `lock_passwd: true`，cloud-init 首启时会对它执行 `passwd -l` 把密码锁掉。因此镜像内额外写入 `/etc/cloud/cloud.cfg.d/99-custom.cfg` 把 `system_info.default_user.lock_passwd` 改成 `false`：有密码时保留可用（cloud-init 反而会解锁），没密码时保持无密码。
 
 > 仓库内仍保留 `.circleci/config.yml`。那套流水线是 CircleCI 专用的，需要在 circleci.com 单独接入本仓库后才会运行；未接入则不会触发。
 
@@ -59,7 +64,7 @@
   ssh -i <你的私钥> alpine@<ECS公网IP>
   sudo -i
   ```
-- 已启用密码登录，但镜像内**不预设任何密码**，且禁止空密码登录（`PermitEmptyPasswords no`）；因此默认仍只能用密钥登录，需要密码登录时请登录后自行 `passwd` 设置
+- 已启用密码登录，且禁止空密码登录（`PermitEmptyPasswords no`）；镜像默认不预设密码，只有在构建时填了 `password` 才有密码，否则请登录后自行 `passwd` 设置
 
 > 创建实例时额外绑定密钥对同样受支持，cloud-init 会把绑定密钥追加进去。
 
