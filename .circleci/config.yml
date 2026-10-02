@@ -109,8 +109,12 @@ jobs:
                 'logdir /var/log/chrony' \
                 > /etc/chrony/chrony.conf" \
               --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config" \
-              --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config" \
+              --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config" \
+              --run-command "sed -i 's/#*PermitEmptyPasswords.*/PermitEmptyPasswords no/g' /etc/ssh/sshd_config" \
               --append-line '/etc/ssh/sshd_config:UseDNS no' \
+              --ssh-inject 'alpine:string:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine' \
+              --ssh-inject 'root:string:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine' \
+              --run-command "mkdir -p /etc/cloud/cloud.cfg.d && printf '%s\n' 'disable_root: false' 'ssh_pwauth: true' > /etc/cloud/cloud.cfg.d/99-root-ssh.cfg" \
               --run-command "if [ -f /boot/extlinux.conf ]; then sed -i 's/\(APPEND .*\)/\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf; else echo 'skip: /boot/extlinux.conf not found'; fi" \
               --run-command 'rc-update add chronyd default || true' \
               --run-command 'rc-update add cloud-init default || true' \
