@@ -52,8 +52,6 @@
 >
 > 另外，Alpine 的默认用户 `alpine` 在 cloud.cfg 里默认带 `lock_passwd: true`，cloud-init 首启时会对它执行 `passwd -l` 把密码锁掉。因此镜像内额外写入 `/etc/cloud/cloud.cfg.d/99-custom.cfg` 把 `system_info.default_user.lock_passwd` 改成 `false`：有密码时保留可用（cloud-init 反而会解锁），没密码时保持无密码。
 
-> 仓库内仍保留 `.circleci/config.yml`。那套流水线是 CircleCI 专用的，需要在 circleci.com 单独接入本仓库后才会运行；未接入则不会触发。
-
 ---
 
 ## 登录与权限（重要）
