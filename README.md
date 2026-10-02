@@ -14,7 +14,7 @@
 ## 使用说明（阿里云）
 
 1. 从 Releases 下载 `alpine-custom.qcow2`
-2. 在阿里云导入自定义镜像，**「启动模式」必须与构建时选的 `boot_mode` 一致**（默认 `bios`）
+2. 在阿里云导入自定义镜像。默认产出的镜像 **BIOS 和 UEFI 都能启动**，「启动模式」选哪个都行；如果构建时选了单一模式（`boot_mode=bios` 或 `uefi`），导入时「启动模式」必须与之一致
 3. 创建 ECS 时可绑定 SSH 密钥对（镜像内已内置公钥，非必需）
 4. 系统盘最小选择 **1G 即可**
 
@@ -29,17 +29,20 @@
   git tag v2.0.2 && git push origin v2.0.2
   ```
 - 在仓库 Actions 页面选择 `Build Alpine Cloud Image` → **Run workflow** 手动触发，可以设置：
-  - `boot_mode`：基础镜像的引导方式，`bios`（默认）或 `uefi`。阿里云导入镜像时的「启动模式」必须与之一致，否则实例会卡在 `Booting from Hard Disk...`
+  - `boot_mode`：引导方式，`both`（默认，BIOS+UEFI 通用）/ `bios` / `uefi`。选 `both` 时导入镜像的「启动模式」选哪个都能启动；选单一模式时导入的「启动模式」必须与之一致，否则实例会卡在 `Booting from Hard Disk...`
   - `ssh_pubkey`：注入镜像的 SSH 公钥（`root` 与 `alpine` 用户都会写入），默认已填好仓库内置的那把，改成你自己的即可；填 `none` 则本次构建不注入任何公钥
   - `password`：同时为 `root` 与 `alpine` 设置的登录密码，留空则不设置任何密码
   - `release_tag`：要发布的 release tag，留空则用 `manual-<run number>`
 
 构建完成后：
 
-- 镜像以 `alpine-custom.qcow2` 发布到 GitHub Release（tag 触发用该 tag，手动触发用指定 tag 或 `manual-<run number>`）
+- Release tag 会带上引导方式后缀便于区分：`<tag>-bios-uefi`（both）、`<tag>-bios`、`<tag>-uefi`。例如推 `v2.0.2` 且 `boot_mode=both`，发布出来的就是 `v2.0.2-bios-uefi`
+- 镜像以 `alpine-custom.qcow2` 发布到该 Release
 - 同时作为 workflow artifact 保留 14 天，可在对应 run 页面直接下载
 
 发布 Release 使用 GitHub 内置的 `GITHUB_TOKEN`，不需要额外配置 secret。
+
+> `boot_mode=both` 的做法：基础镜像用 UEFI（GPT）那个，构建时在磁盘尾部空闲空间新建一个 `bios_grub` 分区，把 GRUB 的 BIOS 引导（i386-pc）写进去，UEFI 引导完全不动，两边共用同一份 `/boot/grub/grub.cfg`。构建过程中会断言 bios_grub 分区确实写入了引导代码，避免静默产出一个起不来的镜像。
 
 > `ssh_pubkey` 是手动触发的输入项，只在那一次运行生效。推 tag 触发时没有输入值，会使用 workflow 里写死的默认公钥；想永久更换默认公钥，需要改 `.github/workflows/build-alpine-image.yml` 里的两处默认值（`workflow_dispatch` 输入的 `default`，以及 `build` job 的 `env.SSH_PUBKEY` 兜底值）。
 >
@@ -97,14 +100,14 @@
 
 ### 实例启动卡在 `Booting from Hard Disk...`
 
-引导方式不匹配。这句提示是传统 BIOS（SeaBIOS）输出的，说明实例按 Legacy BIOS 启动，但磁盘上没有 BIOS 引导程序——镜像构建时用的是 UEFI 变体的基础镜像，而阿里云 `ImportImage` 的 `BootMode` 参数**默认是 `BIOS`**。
+引导方式不匹配。这句提示是传统 BIOS（SeaBIOS）输出的，说明实例按 Legacy BIOS 启动，但磁盘上没有 BIOS 引导程序。
 
-两种解决办法：
+默认的 `boot_mode=both` 镜像两种模式都支持，不会出现这个问题。看到这个提示说明用的是单一模式的镜像、且导入时「启动模式」选错了——阿里云 `ImportImage` 的 `BootMode` 参数**默认是 `BIOS`**，所以导入 `boot_mode=uefi` 的镜像时如果不手动改成 UEFI，就会被卡住。
 
-- 导入镜像时把「启动模式」改成 UEFI，并确认实例规格族支持 UEFI 启动
-- 或者用 `boot_mode=bios` 重新构建一个 BIOS 引导的镜像，按默认的 BIOS 模式导入
+解决办法：
 
-对阿里云来说 BIOS 兼容性更好，所以构建默认就是 `bios`。
+- 用默认的 `both` 重新构建，导入时选哪个模式都能启动
+- 或者重新导入，把「启动模式」改成与镜像一致的值（选 UEFI 需要实例规格族支持 UEFI 启动）
 
 ---
 

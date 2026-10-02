@@ -7,12 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       boot_mode:
-        description: '基础镜像的引导方式。阿里云导入自定义镜像时"启动模式"必须与此一致，默认 BIOS。'
+        description: '引导方式：both = BIOS+UEFI 通用（默认），bios / uefi = 单一模式。阿里云导入时「启动模式」需与之一致。'
         type: choice
         options:
+          - both
           - bios
           - uefi
-        default: bios
+        default: both
       ssh_pubkey:
         description: '注入镜像的 SSH 公钥（root 与 alpine 用户都会写入）。填 none 则本次构建不注入任何公钥。'
         required: false
@@ -46,8 +47,8 @@ jobs:
       SSH_PUBKEY: ${{ inputs.ssh_pubkey || 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvW/cDO0A5pLlIC0WD4jr586MYoxhcXvpvVX3evkOJv alpine' }}
       # 留空表示不设置密码；tag 触发时没有输入值，同样不设置密码。
       SSH_PASSWORD: ${{ inputs.password }}
-      # 阿里云 ImportImage 的 BootMode 默认是 BIOS，所以这里也默认 bios。
-      BOOT_MODE: ${{ inputs.boot_mode || 'bios' }}
+      # 引导方式；tag 触发时没有输入值，默认 both。
+      BOOT_MODE: ${{ inputs.boot_mode || 'both' }}
     outputs:
       image_version: ${{ steps.download.outputs.image_version }}
       boot_mode: ${{ steps.download.outputs.boot_mode }}
@@ -57,10 +58,10 @@ jobs:
           set -euxo pipefail
 
           case "${BOOT_MODE}" in
-            bios|uefi) ;;
-            *) echo "错误：boot_mode 只能是 bios 或 uefi，当前为 ${BOOT_MODE}"; exit 1 ;;
+            both|bios|uefi) ;;
+            *) echo "错误：boot_mode 只能是 both / bios / uefi，当前为 ${BOOT_MODE}"; exit 1 ;;
           esac
-          echo "基础镜像引导方式：${BOOT_MODE}（阿里云导入时「启动模式」需与之一致）"
+          echo "引导方式：${BOOT_MODE}"
 
           if [ "$(printf '%s' "${SSH_PUBKEY}" | tr '[:upper:]' '[:lower:]')" = "none" ]; then
             echo "ssh_pubkey=none：本次构建不注入任何公钥"
@@ -105,12 +106,19 @@ jobs:
           set -euxo pipefail
           BASE_URL="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud"
 
+          # both 模式从 UEFI(GPT) 镜像出发再补 BIOS 引导；反过来在 MBR 镜像上加 UEFI 不可靠。
+          case "${BOOT_MODE}" in
+            bios) BASE_FLAVOR=bios ;;
+            *)    BASE_FLAVOR=uefi ;;
+          esac
+          echo "基础镜像变体：${BASE_FLAVOR}"
+
           FILE_NAME="$(curl -fsSL "${BASE_URL}/" \
-            | grep -Eo "generic_alpine-[0-9]+\.[0-9]+\.[0-9]+-x86_64-${BOOT_MODE}-cloudinit-r[0-9]+\.qcow2" \
+            | grep -Eo "generic_alpine-[0-9]+\.[0-9]+\.[0-9]+-x86_64-${BASE_FLAVOR}-cloudinit-r[0-9]+\.qcow2" \
             | sort -Vu \
             | tail -n1)"
 
-          test -n "${FILE_NAME}" || (echo "未找到可用 qcow2 文件（boot_mode=${BOOT_MODE}）" && exit 1)
+          test -n "${FILE_NAME}" || (echo "未找到可用 qcow2 文件（flavor=${BASE_FLAVOR}）" && exit 1)
 
           DOWNLOAD_URL="${BASE_URL}/${FILE_NAME}"
           echo "最新镜像: ${FILE_NAME}"
@@ -209,6 +217,22 @@ jobs:
 
           rm -f "${RUNNER_TEMP}/guest-password"
 
+      # both 模式：基础镜像是 UEFI(GPT) 的，这里在磁盘尾部空闲空间补一个 bios_grub 分区，
+      # 并把 GRUB 的 BIOS 引导（i386-pc）写进去。UEFI 那条路完全不动，两边共用 /boot/grub/grub.cfg。
+      - name: Add BIOS boot support (dual mode)
+        if: env.BOOT_MODE == 'both'
+        run: |
+          set -euxo pipefail
+          export LIBGUESTFS_BACKEND=direct
+          export LIBGUESTFS_DEBUG=1
+
+          sudo virt-customize -a alpine-base.qcow2 \
+            --install grub,grub-bios,sgdisk \
+            --run-command 'set -eux; sgdisk -e /dev/sda; sgdisk -n 3:0:+4096 -t 3:21686148-6449-6E6F-744E-656564454649 -c 3:BIOS -A 3:set:2 /dev/sda; sgdisk -p /dev/sda' \
+            --run-command 'set -eux; grub-install --target=i386-pc --no-floppy --recheck /dev/sda' \
+            --run-command 'set -eu; sgdisk -p /dev/sda | grep -q EF02 || { echo "断言失败：未找到 bios_grub(EF02) 分区"; exit 1; }; [ -f /boot/grub/grub.cfg ] || { echo "断言失败：缺少 /boot/grub/grub.cfg，BIOS GRUB 无配置可读"; exit 1; }; [ -d /usr/lib/grub/i386-pc ] || { echo "断言失败：缺少 i386-pc 模块"; exit 1; }; S=$(sgdisk -i 3 /dev/sda | awk "/First sector:/ {print \$3}"); [ -n "$S" ] || { echo "断言失败：无法解析分区起始扇区"; exit 1; }; dd if=/dev/sda of=/tmp/sec bs=512 skip=$S count=1 2>/dev/null; dd if=/dev/zero of=/tmp/zero bs=512 count=1 2>/dev/null; if cmp -s /tmp/sec /tmp/zero; then echo "断言失败：bios_grub 分区内容全为 0，GRUB 未写入引导代码"; exit 1; fi; rm -f /tmp/sec /tmp/zero; echo "断言通过：BIOS 引导代码已写入 bios_grub 分区"' \
+            --delete '/var/cache/apk/*'
+
       - name: Compress image
         run: |
           set -euxo pipefail
@@ -258,13 +282,19 @@ jobs:
           set -euxo pipefail
           ls -lh dist/alpine-custom.qcow2
 
+          case "${BOOT_MODE}" in
+            both) BOOT_LABEL=bios-uefi ;;
+            *)    BOOT_LABEL="${BOOT_MODE}" ;;
+          esac
+
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            TAG_NAME="${GITHUB_REF_NAME}"
+            BASE_TAG="${GITHUB_REF_NAME}"
           else
-            TAG_NAME="${INPUT_RELEASE_TAG}"
-            [ -n "${TAG_NAME}" ] || TAG_NAME="manual-${GITHUB_RUN_NUMBER}"
+            BASE_TAG="${INPUT_RELEASE_TAG}"
+            [ -n "${BASE_TAG}" ] || BASE_TAG="manual-${GITHUB_RUN_NUMBER}"
           fi
-          echo "准备发布 Tag: ${TAG_NAME}"
+          TAG_NAME="${BASE_TAG}-${BOOT_LABEL}"
+          echo "准备发布 Tag: ${TAG_NAME}（引导方式 ${BOOT_MODE}）"
 
           if ! gh release view "${TAG_NAME}" >/dev/null 2>&1; then
             gh release create "${TAG_NAME}" \
